@@ -1,9 +1,16 @@
 import express from "express";
 import http from "http";
+import cors from "cors";
 import { WebSocketServer } from "ws";
 
 const app = express();
 const server = http.createServer(app);
+
+// Enable CORS for all routes
+app.use(cors({
+  origin: "*", // you can replace "*" with your frontend domain for security
+  methods: ["GET", "POST"],
+}));
 
 // WebSocket servers
 const wssESP = new WebSocketServer({ noServer: true });
@@ -12,7 +19,7 @@ const wssFrontend = new WebSocketServer({ noServer: true });
 let espClients = {}; // { esp1: ws, esp2: ws }
 let nextId = 1;
 
-// Upgrade handling
+// Upgrade handling for WebSocket paths
 server.on("upgrade", (req, socket, head) => {
   if (req.url === "/esp") {
     wssESP.handleUpgrade(req, socket, head, ws =>
@@ -40,7 +47,7 @@ wssESP.on("connection", (ws) => {
     // Forward sensor data to all frontend clients
     wssFrontend.clients.forEach(client => {
       if (client.readyState === 1) {
-        client.send(JSON.stringify({ espId, message }));
+        client.send(JSON.stringify({ type: "sensor", espId, message }));
       }
     });
   });
@@ -67,11 +74,16 @@ app.get("/led", (req, res) => {
   res.send(`Sent ${cmd} to ${id}`);
 });
 
+// List connected devices
 app.get("/devices", (req, res) => {
   res.json(Object.keys(espClients));
 });
 
+// Root
 app.get("/", (req, res) => res.send("ESP Backend is running 🚀"));
 
+// Start server
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, "0.0.0.0", () => console.log(`🚀 Backend running on ${PORT}`));
+server.listen(PORT, "0.0.0.0", () =>
+  console.log(`🚀 Backend running on ${PORT}`)
+);
