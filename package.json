@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Backend for ESP8266 communication with WebSockets and Express",
   "main": "server.js",
+  "type": "module",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"
@@ -17,6 +18,7 @@
   "author": "Your Name",
   "license": "MIT",
   "dependencies": {
+    "cors": "^2.8.5",
     "express": "^4.19.2",
     "ws": "^8.18.0"
   },
