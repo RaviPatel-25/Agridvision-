@@ -1,89 +1,91 @@
-import express from "express";
-import http from "http";
-import cors from "cors";
-import { WebSocketServer } from "ws";
+import express from 'express';
+import http from 'http';
+import { WebSocketServer } from 'ws';
+import os from 'os';
+import axios from 'axios';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 const app = express();
 const server = http.createServer(app);
+const wss = new WebSocketServer({ server });
 
-// Enable CORS for all routes
-app.use(cors({
-  origin: "*", // you can replace "*" with your frontend domain for security
-  methods: ["GET", "POST"],
-}));
+const nodemcuClients = new Map();
+const browserClients = new Set();
+const PYTHON_API_URL = 'http://127.0.0.1:5000/predict/anomaly';
 
-// WebSocket servers
-const wssESP = new WebSocketServer({ noServer: true });
-const wssFrontend = new WebSocketServer({ noServer: true });
-
-let espClients = {}; // { esp1: ws, esp2: ws }
-let nextId = 1;
-
-// Upgrade handling for WebSocket paths
-server.on("upgrade", (req, socket, head) => {
-  if (req.url === "/esp") {
-    wssESP.handleUpgrade(req, socket, head, ws =>
-      wssESP.emit("connection", ws, req)
-    );
-  } else if (req.url === "/frontend") {
-    wssFrontend.handleUpgrade(req, socket, head, ws =>
-      wssFrontend.emit("connection", ws, req)
-    );
-  } else {
-    socket.destroy();
+function getLocalIP() {
+  const interfaces = os.networkInterfaces();
+  for (let name in interfaces) {
+    for (let iface of interfaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) return iface.address;
+    }
   }
-});
+  return 'localhost';
+}
 
-// --- ESP connections ---
-wssESP.on("connection", (ws) => {
-  const espId = `esp${nextId++}`;
-  espClients[espId] = ws;
-  console.log(`✅ ${espId} connected`);
-
-  ws.on("message", (msg) => {
+wss.on('connection', (ws) => {
+  ws.on('message', async (msg) => {
     const message = msg.toString();
-    console.log(`📩 From ${espId}:`, message);
 
-    // Forward sensor data to all frontend clients
-    wssFrontend.clients.forEach(client => {
-      if (client.readyState === 1) {
-        client.send(JSON.stringify({ type: "sensor", espId, message }));
+    if (message.startsWith('NODEMCU:')) {
+      const id = message.split(':')[1];
+      ws.isNodeMCU = true;
+      nodemcuClients.set(id, ws);
+      console.log(`NodeMCU connected: ${id}`);
+      return;
+    }
+
+    if (message === 'BROWSER') {
+      browserClients.add(ws);
+      console.log('Browser connected');
+      return;
+    }
+
+    if (ws.isNodeMCU) {
+      try {
+        const sensorData = JSON.parse(message);
+        let aiResponse = { system_status: 'unknown', explanation: 'AI server could not be reached.' };
+        
+        try {
+          const response = await axios.post(PYTHON_API_URL, sensorData);
+          aiResponse = response.data; // Gets both status and explanation
+        } catch (err) {
+          console.error("⚠️ AI server error:", err.message);
+        }
+
+        // Combine the original data with the AI response
+        const messageToSend = JSON.stringify({ ...sensorData, ...aiResponse });
+
+        for (let browser of browserClients) {
+          browser.send(messageToSend);
+        }
+      } catch (e) {
+        console.log("Non-JSON message from NodeMCU:", message);
       }
-    });
+    } else {
+      for (const n of nodemcuClients.values()) n.send(message);
+    }
   });
 
-  ws.on("close", () => {
-    console.log(`❌ ${espId} disconnected`);
-    delete espClients[espId];
+  ws.on('close', () => {
+    for (const [id, client] of nodemcuClients.entries()) {
+      if (client === ws) {
+        nodemcuClients.delete(id);
+        console.log(`NodeMCU disconnected: ${id}`);
+      }
+    }
+    browserClients.delete(ws);
   });
 });
 
-// --- REST API for frontend ---
-app.get("/led", (req, res) => {
-  const { state, id } = req.query;
-  if (!id || !espClients[id]) {
-    return res.status(400).send("Invalid ESP id");
-  }
-  if (!["on", "off"].includes(state)) {
-    return res.status(400).send("Use ?state=on or off");
-  }
-
-  const cmd = state === "on" ? "LED_ON" : "LED_OFF";
-  espClients[id].send(cmd);
-  console.log(`➡️ Sent to ${id}: ${cmd}`);
-  res.send(`Sent ${cmd} to ${id}`);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'demo.html'));
 });
 
-// List connected devices
-app.get("/devices", (req, res) => {
-  res.json(Object.keys(espClients));
+const PORT = 8080;
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running at http://${getLocalIP()}:${PORT}`);
 });
-
-// Root
-app.get("/", (req, res) => res.send("ESP Backend is running 🚀"));
-
-// Start server
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, "0.0.0.0", () =>
-  console.log(`🚀 Backend running on ${PORT}`)
-);
